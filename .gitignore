@@ -1,0 +1,12 @@
+node_modules/
+__pycache__/
+*.pyc
+*.log
+.env
+auth-key.txt
+account.txt
+derived.key
+identity.json
+watch.json
+*.pcap
+*.btsnoop

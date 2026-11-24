@@ -1,0 +1,138 @@
+# BCS helper — attribution and licensing
+
+Copyright (C) 2026 HyperionOS Project. SPDX-License-Identifier: AGPL-3.0-or-later
+
+This helper is part of Aether Health and is licensed under the GNU Affero General Public
+License v3.0 or later. The repository-root `LICENSE` file is the licence text; this helper
+has no separate licence.
+
+## Gadgetbridge reference
+
+The BCS helper speaks a protocol whose layout was learned from the Gadgetbridge project
+(https://codeberg.org/Freeyourgadget/Gadgetbridge), which is also AGPL-3.0-or-later, © the
+Gadgetbridge contributors.
+
+Two commits matter, and both are named so a reader can tell them apart:
+
+- `de7c2ba8d636a3dc5b750770fb3654671a4bd260` — the Codeberg commit `docs/BCS_PHASE0.md` cites as the
+  project's reference.
+- `a0948ee1cbc2a870f91d313f8e37df5f524465f7` — the GitHub mirror's `master`, frozen at 2024-12-22,
+  which is what the Phase 2 port was actually read from and line-cited against. Codeberg answered an
+  automated fetch with a bot check and the Codeberg hash does not resolve on the mirror (HTTP 422),
+  so the immutable mirror hash was used instead. `docs/BCS_NOTICE.md` records the same pair.
+
+Phase 1 contains **no ported Gadgetbridge code**: every file there is original, written from the
+design in `docs/BCS_PHASE0.md`. The only reference-source fact Phase 1 uses is the Huawei SDP
+service UUID `82FF3820-8411-400C-B85A-55BDB32CF060`, cited in `docs/BCS_PHASE0.md` §1.1 as
+`HuaweiConstants.java:33`, and used as a constant in `sidecar/bcs_bt.py` and
+`src/huawei/constants.ts`. That UUID is now what a live run resolves the RFCOMM channel with:
+`probe-channel` and the sidecar's `resolve_channel` ask BlueZ's `sdptool` which record carries it, and
+the sidecar refuses to connect to any channel SDP did not name in that session. The SDP resolving,
+matching and gating code is original; the only upstream fact behind it is the UUID itself.
+
+Phase 2 (the packet codec under `src/huawei/`) **is** a port, and it holds no key material: it
+frames bytes, parses TLVs and computes the checksum. Each ported file carries Gadgetbridge's own
+AGPL header reference plus a line naming the upstream file, the line range and the commit it was read
+from.
+
+Phase 3 (trust/auth, also under `src/huawei/`) **is** a port too, and it is where the key material
+enters: the crypto primitives, the auth packets and the HiChain state machine. It reads no file, holds
+the key only in memory, zeroes it on completion or `destroy()`, and never passes key material to a
+logger or to an error message — `test/authKeyLeak.test.ts` is the check for that last part. What it
+does **not** port, deliberately: the bonding path (`HuaweiCrypto.createSecretKey(macAddress)`,
+`DeviceConfig.Bond` / `BondParams`) and the legacy digest auth (HiChainLite, service `0x01` command
+`0x13`). `docs/BCS_PHASE3.md` lists every divergence and every finding.
+
+## Files ported from Gadgetbridge
+
+Phase 2, from `a0948ee1cbc2a870f91d313f8e37df5f524465f7` (upstream paths are relative to
+`app/src/main/java/nodomain/freeyourgadget/gadgetbridge/`; the test paths are under
+`app/src/test/java/`). Line ranges are given at the top of each file too:
+
+| File here | Ported from |
+| --- | --- |
+| `src/huawei/crc16.ts` | `util/CheckSums.java:59-73` |
+| `src/huawei/varint.ts` | `devices/huawei/HuaweiTLV.java:384-452` |
+| `src/huawei/tlv.ts` | `devices/huawei/HuaweiTLV.java:39-380` |
+| `src/huawei/frame.ts` | `devices/huawei/HuaweiPacket.java:246, 321-421, 767-847, 934-960` |
+| `src/huawei/stream.ts` | `devices/huawei/HuaweiPacket.java:321-361, 375, 388-402` |
+| `src/huawei/constants.ts` | `HuaweiConstants.java:33-45`, `packets/DeviceConfig.java:48-135, 182, 422, 607, 668`, `packets/AccountRelated.java:23, 26, 53` |
+| `src/huawei/requests.ts` | `packets/DeviceConfig.java:53-70, 137-146, 240-282, 424-446, 609-627, 668-678`, `packets/AccountRelated.java:28-43, 55-74` |
+| `test/huaweiCrc16.test.ts` | CRC bytes of `devices/huawei/TestHuaweiPacket.java`, cross-checked against an independent bitwise CRC |
+| `test/huaweiVarInt.test.ts` | `devices/huawei/TestVarInt.java:22-72` |
+| `test/huaweiTlv.test.ts` | `devices/huawei/TestHuaweiTLV.java:59-532` |
+| `test/huaweiFrame.test.ts` | `devices/huawei/TestHuaweiPacket.java:19-269` |
+
+Phase 3, same commit. Upstream paths are again relative to
+`app/src/main/java/nodomain/freeyourgadget/gadgetbridge/`:
+
+| File here | Ported from |
+| --- | --- |
+| `src/huawei/crypto.ts` | `util/CryptoUtils.java:44-141` (AES-ECB/CBC/GCM, HMAC-SHA256, SHA-256, HKDF, PBKDF2); `devices/huawei/HuaweiCrypto.java:48-79, 99-192, 243-252` (secrets, nonce, digests, challenge/response, pin code) |
+| `src/huawei/authPackets.ts` | `devices/huawei/packets/DeviceConfig.java:50-123, 858-902, 970-1462, 1575-1640`; `devices/huawei/HuaweiConstants.java:30`; `service/devices/huawei/HuaweiSupportProvider.java:474-495, 497-529, 564-578`; `service/devices/huawei/requests/{GetHiChainRequest,GetSecurityNegotiationRequest,GetPincodeRequest,GetDeviceStatusRequest}.java` |
+| `src/huawei/authMachine.ts` | `service/devices/huawei/requests/GetHiChainRequest.java:38-262`; `service/devices/huawei/HuaweiSupportProvider.java:405-473, 497-529, 535-578, 677-699` |
+| `src/huawei/authErrors.ts` | original: upstream throws five exception types; this project returns typed codes so a caller can say which step stopped |
+| `test/huaweiCrypto.test.ts` | the one test of `devices/huawei/TestHuaweiCrypto.java` (nonce length and spread), plus FIPS-197, NIST SP 800-38A F.2.1, RFC 4231 case 1, RFC 5869 case 1 and the standard PBKDF2-SHA256 vectors |
+| `test/huaweiAuthPackets.test.ts` | the request and reply shapes of the `DeviceConfig.java` and `GetHiChainRequest.java` ranges above |
+| `test/huaweiAuthMachine.test.ts` | the step machine of `GetHiChainRequest.java:38-262` and the sequence of `HuaweiSupportProvider.java:405-578` |
+| `test/authKeyLeak.test.ts` | original: this project's guarantee, not upstream's |
+
+`src/huawei/errors.ts` and `src/huawei/index.ts` are original. The error taxonomy is this project's,
+because a live stream must produce typed errors rather than exceptions. The full list of deliberate
+divergences is at the top of the file that makes them, and summarised in
+`docs/BCS_NOTICE.md`.
+
+One finding worth recording, because it was verified rather than assumed: `CheckSums.getCRC16` is
+CRC-16/XMODEM — polynomial 0x1021, init 0x0000, MSB-first, no reflection, no final XOR. Evidence: the
+ported loop reproduces the CRC of all five Gadgetbridge test frames (0x40B6, 0xA4F0, 0xCC98, 0xFAD3,
+0x37CA), returns the published XMODEM check value 0x31C3 for `"123456789"`, and matches an
+independent bit-by-bit implementation over the whole byte range and over seeded random input
+(`test/huaweiCrc16.test.ts`). `docs/BCS_PHASE0.md` §1.3 notes the reflected polynomial 0xA001 of the
+unrelated `getCRC16ansi` variant; the frame does **not** use it.
+
+## Per-file header convention
+
+Every source file in this helper opens with the same four items:
+
+1. a one-line purpose statement that also states the write restriction (only allowlisted
+  authentication frames may be sent to the watch),
+2. `Copyright (C) 2026 HyperionOS Project. SPDX-License-Identifier: AGPL-3.0-or-later`,
+3. a pointer to this `NOTICE` file,
+4. where applicable, the Gadgetbridge reference line above.
+
+## Privacy rules carried into the code
+
+- The watch's Bluetooth address is not treated as a secret, but it is never committed, never
+  logged to a file in the repository, and never printed unmasked: every script and test masks
+  it as `XX:XX:XX:XX:AA:BB`, keeping only the last two octets.
+- No device auth code, cookie or account token is read, requested or stored in Phase 1.
+- Bytes received from the watch are never logged; only the byte count and the time are.
+- In Phase 3 the auth key is supplied by the caller as bytes. It is copied on construction, never
+  logged, never put in an error message or a `detail`, and never sent to the watch; `destroy()` and a
+  completed flow zero it, along with every intermediate secret. `test/authKeyLeak.test.ts` searches
+  everything the machine produces — errors, rendered error objects and the bytes it asks the caller to
+  send — for the key and for the derived key, in five spellings each.
+- Part 3B's live script (`tools/bcs_auth.sh`, written and not run) reads the key from
+  `~/.config/aether-bcs/auth-key.txt` with mode `0600` checked first, takes the pin code from a hidden
+  prompt on stdin, never prints the derived key, and pipes every line it produces through a masker. It
+  can also generate the key (`--set-key --generate`, 16 random bytes from `node:crypto`) and write it
+  straight to that file: the value is never echoed, never in argv and never in a log.
+- The Huawei account ID is personal data, kept in its own file (`account.txt`, mode `0600`) and typed
+  at a hidden prompt by `--set-account`. It is never printed, logged or reported — only its digit count
+  is — and `--with-account` refuses before the radio opens, because the account frame has to be
+  encrypted with the derived key and that cipher is not implemented.
+- One machine boundary is named rather than hidden: resolving the RFCOMM channel runs
+  `sdptool browse <address>`, so the address is that one child process's argv for the length of the
+  query. It is the only place the address leaves this helper unmasked, it is required by the tool, and
+  nothing is written to disk by it. Every log line, event, report and error this helper produces is
+  masked, and `mask_text()` in `sidecar/bcs_bt.py` is applied to every protocol line the sidecar emits.
+- The same script can look the channel up without a run: `--sdp-only` requires `SDPLOOKUP` at the
+  terminal (never `AUTHENTICATE`), reads **no** key, writes no identity file, opens no RFCOMM
+  connection and sends no frame. It prints only the masked watch address and the SDP evidence, and
+  leaves the same pair of private per-run files as a live run.
+- Each run writes its own log and report under that state directory, and no run overwrites the one
+  before it: the name carries a UTC stamp, plus the shell's pid when `tools/bcs_auth.sh` is the caller,
+  and a driver started on its own adds its own pid when its default name is taken. The shell runs under
+  `umask 077` and the driver creates the report with mode `0600`, so both files are private. A report
+  holds stage names, coded refusals and byte/frame counts only — no key, no account value, no payload
+  and no unmasked address.

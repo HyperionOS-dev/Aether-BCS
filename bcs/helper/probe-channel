@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+# BCS helper — Phase 1 (link only): find the watch's RFCOMM channel. Writes no bytes to the watch.
+# Copyright (C) 2026 HyperionOS Project. SPDX-License-Identifier: AGPL-3.0-or-later
+# See NOTICE in this directory for attribution and privacy rules.
+#
+# This is the one command Phase 1 asks the user to run, and it prints as little as it can:
+# the masked address, what SDP said, and the channel that accepted. Nothing else leaves the
+# machine, no address is printed in full, and no bytes are ever sent to the watch.
+#
+#   cd bcs/helper && python3 probe-channel                # sdptool first, then channels 1-30
+#   python3 probe-channel --sdp-only                      # just ask SDP; connect to nothing
+#   python3 probe-channel --channels 1-30 --timeout 3     # explicit sweep
+#   python3 probe-channel --json                          # one JSON object, for a script
+#
+# Exit codes: 0 = a channel accepted, 1 = no channel accepted, 2 = cannot even try
+# (no saved address, unreadable config, no Bluetooth support in this Python).
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+
+# The Bluetooth facts live next to this script in sidecar/, which is not an importable package
+# when this file is run directly (it has no .py suffix, so it can never be a module).
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "sidecar"))
+
+import bcs_bt  # noqa: E402 - the path above has to be set up first
+
+
+def parse_channels(spec: str) -> list[int]:
+    """'5' | '1-30' | '1,3,5' | '1-3,7' -> a sorted, de-duplicated list inside 1-30.
+
+    A spec that cannot be read is a config error with a sentence, not a ValueError traceback:
+    the user typed it, so they get told what was wrong with it.
+    """
+    wanted: set[int] = set()
+    for piece in str(spec).split(","):
+        piece = piece.strip()
+        if not piece:
+            continue
+        try:
+            if "-" in piece:
+                low_text, _, high_text = piece.partition("-")
+                low, high = int(low_text), int(high_text)
+            else:
+                low = high = int(piece)
+        except ValueError:
+            raise bcs_bt.BcsLinkError(
+                "bad-config", f"{piece!r} is not a channel or a channel range"
+            ) from None
+        for channel in range(low, high + 1):
+            if not bcs_bt.CHANNEL_MIN <= channel <= bcs_bt.CHANNEL_MAX:
+                raise bcs_bt.BcsLinkError(
+                    "bad-config",
+                    f"channel {channel} is outside {bcs_bt.CHANNEL_MIN}-{bcs_bt.CHANNEL_MAX}",
+                )
+            wanted.add(channel)
+    if not wanted:
+        raise bcs_bt.BcsLinkError("bad-config", "no channels were given to probe")
+    return sorted(wanted)
+
+
+def ordered_channels(requested: list[int], sdp: bcs_bt.SdpResult) -> tuple[list[int], str]:
+    """The SDP answer first when there is one, then the rest. Returns (channels, description)."""
+    if sdp.channel is None:
+        return requested, f"{bcs_bt.CHANNEL_MIN}-{bcs_bt.CHANNEL_MAX}"
+    first = [sdp.channel]
+    rest = [channel for channel in requested if channel != sdp.channel]
+    return first + rest, f"sdp {sdp.channel} first, then the rest"
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="probe-channel",
+        description="Find the watch's RFCOMM channel (BCS helper, Phase 1: link only).",
+    )
+    parser.add_argument("--config", default=bcs_bt.DEFAULT_CONFIG_PATH, help="where the watch address is saved")
+    parser.add_argument("--channels", default=f"{bcs_bt.CHANNEL_MIN}-{bcs_bt.CHANNEL_MAX}", help="channels to try, e.g. 1-30")
+    parser.add_argument("--timeout", type=float, default=bcs_bt.DEFAULT_PROBE_TIMEOUT, help="seconds per connect attempt")
+    parser.add_argument("--budget", type=float, default=bcs_bt.DEFAULT_PROBE_BUDGET, help="seconds for the whole run")
+    parser.add_argument("--no-sdp", action="store_true", help="skip SDP and just probe")
+    parser.add_argument("--sdp-only", action="store_true", help="ask SDP and stop; connect to nothing")
+    parser.add_argument("--json", action="store_true", help="print one JSON object instead of lines")
+    parser.add_argument("--verbose", action="store_true", help="per-channel progress on stderr")
+    return parser.parse_args(argv)
+
+
+def main(argv=None) -> int:
+    args = parse_args(argv)
+
+    def diag(message: str) -> None:
+        print(bcs_bt.mask_text(message), file=sys.stderr, flush=True)
+
+    try:
+        address = bcs_bt.load_watch_address(args.config)
+        requested = parse_channels(args.channels)
+    except bcs_bt.BcsLinkError as failure:
+        print(f"probe: {bcs_bt.mask_text(str(failure))}", file=sys.stderr)
+        return 2
+
+    # SDP is a read-only query, and it is cheap. A failure to obtain it is not fatal.
+    if args.no_sdp:
+        sdp = bcs_bt.SdpResult("skipped", None, "--no-sdp was used")
+    else:
+        diag("asking SDP for the watch's services…")
+        sdp = bcs_bt.lookup_sdp(address)
+        found = sdp.channel if sdp.channel is not None else "no channel"
+        diag(f"sdp: {sdp.method} -> {found}")
+
+    if args.sdp_only:
+        # Nothing is connected here: the report still gets a full shape, with a stated reason.
+        outcome = bcs_bt.ProbeOutcome(aborted_reason="--sdp-only was used, so nothing was connected")
+        spec = "not probed"
+    else:
+        channels, spec = ordered_channels(requested, sdp)
+        diag(f"trying {len(channels)} channel(s), {args.timeout:.1f}s each, stopping at the first accept…")
+
+        def report(result: bcs_bt.ProbeResult) -> None:
+            if args.verbose:
+                diag(f"channel {result.channel}: {result.code or result.outcome}")
+
+        outcome = bcs_bt.probe_channels(
+            address,
+            channels=channels,
+            timeout=args.timeout,
+            budget=args.budget,
+            on_result=report,
+        )
+
+    masked = bcs_bt.mask_address(address)
+    if outcome.accepted is None:
+        next_step = "next: check the watch is on and awake and not connected to the phone, then run this again."
+    elif sdp.channel == outcome.accepted:
+        next_step = (
+            f"next: SDP and the probe agree on channel {outcome.accepted}. The live bind still resolves "
+            "the channel through SDP before it connects (nothing here writes to the watch)."
+        )
+    else:
+        where = f" (SDP said {sdp.channel})" if sdp.channel is not None else ""
+        next_step = (
+            f"next: channel {outcome.accepted} accepted, but SDP did not name it{where}. A probed "
+            "channel is a guess and the live bind never falls back to one, so fix SDP first: check "
+            "`sdptool browse <address>`, then run this again."
+        )
+
+    if args.json:
+        # One object on stdout and nothing else, so --json can be piped straight into another tool.
+        print(
+            json.dumps(
+                {
+                    "masked_address": masked,
+                    "sdp_method": sdp.method,
+                    "sdp_channel": sdp.channel,
+                    "sdp_confirmed": sdp.confirmed,
+                    "channel": outcome.accepted,
+                    "accepted": outcome.accepted is not None,
+                    "channel_matches_sdp": outcome.accepted is not None and sdp.channel == outcome.accepted,
+                    "channels_tried": len(outcome.results),
+                    "stopped_early": outcome.aborted_reason,
+                    "next": next_step,
+                }
+            )
+        )
+        return 0 if outcome.accepted is not None else 1
+
+    for line in bcs_bt.format_probe_report(masked, sdp, outcome, args.timeout, spec):
+        print(line)
+    print(next_step)
+    return 0 if outcome.accepted is not None else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+

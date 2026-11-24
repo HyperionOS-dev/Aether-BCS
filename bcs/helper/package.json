@@ -1,0 +1,22 @@
+{
+  "name": "aether-bcs-helper",
+  "private": true,
+  "version": "0.3.0-phase3g",
+  "type": "module",
+  "description": "BCS helper: Phase 1 (link) opens a classic-Bluetooth RFCOMM link; the sidecar writes only allowlisted auth frames. Phase 2 (codec) is the pure Huawei packet codec. Phase 3 (trust/auth) is the HiChain state machine; the key is held in memory only and never logged or sent.",
+  "license": "AGPL-3.0-or-later",
+  "engines": {
+    "node": ">=22.6"
+  },
+  "comment": "No dependencies on purpose: Node >= 22.6 strips TypeScript types itself, so the transport and its tests run with no install step. The Python side is standard library only.",
+  "scripts": {
+    "test": "node --test test/",
+    "test:codec": "node --test test/huaweiCrc16.test.ts test/huaweiVarInt.test.ts test/huaweiTlv.test.ts test/huaweiFrame.test.ts test/huaweiStream.test.ts test/huaweiRequests.test.ts",
+    "test:auth": "node --test test/huaweiCrypto.test.ts test/huaweiAuthPackets.test.ts test/huaweiAuthMachine.test.ts test/authKeyLeak.test.ts",
+    "test:py": "python3 -m unittest discover -s sidecar -t . -p 'test_*.py'",
+    "test:all": "npm test && npm run test:py",
+    "probe": "python3 probe-channel",
+    "watch:list": "python3 tools/watch-address.py list",
+    "watch:save": "python3 tools/watch-address.py save"
+  }
+}
