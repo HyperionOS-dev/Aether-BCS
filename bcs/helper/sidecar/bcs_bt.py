@@ -402,7 +402,7 @@ def lookup_sdp(
     if which("sdptool"):
         for attempt in range(SDP_MAX_ATTEMPTS):
             try:
-                completed = runner(["sdptool", "browse", address], capture_output=True, text=True, timeout=timeout)
+                completed = runner(["sdptool", "search", "--bdaddr", address, "0x0003"], capture_output=True, text=True, timeout=timeout)
             except subprocess.TimeoutExpired:
                 return SdpResult("sdptool", None, f"sdptool did not answer within {timeout:.0f}s")
             except OSError as exc:

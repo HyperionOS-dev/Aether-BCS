@@ -416,5 +416,23 @@ describe("authPackets — reading the watch's HiChain replies (DeviceConfig.HiCh
     assert.equal(failure(parseHiChainResponse(reply({ isoSalt: "AABB", peerAuthId: "CCDD" }))).detail, "token");
     assert.equal(failure(parseHiChainResponse(reply({ isoSalt: "ZZ", peerAuthId: "CCDD", token: "EEFF" }))).detail, "isoSalt");
   });
+
+  test("trailing NUL bytes inside tag 0x01 are trimmed before JSON parsing", () => {
+    const jsonBytes = new TextEncoder().encode(JSON.stringify({ payload: { returnCodeMac: "0102" } }));
+    const padded = new Uint8Array(jsonBytes.length + 2);
+    padded.set(jsonBytes, 0);
+    const tlv = new HuaweiTlv().putBytes(0x01, padded).putByte(0x04, 0x00);
+    const response = ok(parseHiChainResponse(tlv));
+    assert.equal(response.step, 2);
+    assert.deepEqual(response.step2?.returnCodeMac, bytes(0x01, 0x02));
+  });
+
+  test("non-JSON tag 0x01 reports structural metadata without echoing payload text", () => {
+    const err = failure(parseHiChainResponse(rawEnvelope("not json")));
+    assert.equal(err.code, "auth-truncated");
+    assert.ok(err.detail?.includes("len=8"));
+    assert.ok(err.detail?.includes("head=6e6f"));
+    assert.equal(err.detail?.includes("not json"), false);
+  });
 });
 

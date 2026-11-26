@@ -370,13 +370,44 @@ export function parseHiChainResponse(tlv: HuaweiTlv): CodecResult<HiChainRespons
       step4: { data: data.ok ? data.value : null },
     });
   }
-  const json = tlv.tryGetString(0x01);
-  if (!json.ok) return failure("auth-truncated", "HiChain reply has no JSON tag 0x01", "hichain");
+  const raw = tlv.tryGetBytes(0x01);
+  if (!raw.ok) return failure("auth-truncated", "HiChain reply has no JSON tag 0x01", "hichain");
+  let end = raw.value.length;
+  while (end > 0 && raw.value[end - 1] === 0x00) end -= 1;
+  const trimmed = raw.value.subarray(0, end);
+  const text = new TextDecoder().decode(trimmed);
   let value: Record<string, unknown>;
   try {
-    value = JSON.parse(json.value) as Record<string, unknown>;
-  } catch {
-    return failure("auth-truncated", "HiChain reply tag 0x01 is not JSON", "hichain");
+    value = JSON.parse(text) as Record<string, unknown>;
+  } catch (err) {
+    const bytes = raw.value;
+    const hex2 = (slice: Uint8Array): string =>
+      Array.from(slice, (b) => b.toString(16).padStart(2, "0")).join("");
+    let ctrl = 0;
+    let nonAscii = 0;
+    for (const b of trimmed) {
+      if (b >= 0x80) nonAscii += 1;
+      else if (b < 0x20 && b !== 0x09 && b !== 0x0a && b !== 0x0d) ctrl += 1;
+    }
+    const msg = err instanceof Error ? err.message : "";
+    const posMatch = /position ([0-9]+)/.exec(msg);
+    const pos = posMatch ? Number(posMatch[1]) : null;
+    const atHex = pos !== null && pos < text.length
+      ? text.charCodeAt(pos).toString(16).padStart(2, "0")
+      : null;
+    const detail = [
+      `len=${bytes.length}`,
+      `nul=${bytes.length - end}`,
+      `head=${hex2(bytes.subarray(0, 2))}`,
+      `tail=${hex2(bytes.subarray(Math.max(0, bytes.length - 2)))}`,
+      `open=${text.indexOf("{")}`,
+      `close=${text.lastIndexOf("}")}`,
+      `ctrl=${ctrl}`,
+      `nonAscii=${nonAscii}`,
+      ...(pos !== null ? [`pos=${pos}`] : []),
+      ...(atHex !== null ? [`at=0x${atHex}`] : []),
+    ].join(" ");
+    return failure("auth-truncated", "HiChain reply tag 0x01 is not JSON", "hichain", detail);
   }
   const payload = value.payload;
   if (payload === null || typeof payload !== "object") {
